@@ -1,0 +1,406 @@
+import os
+import numpy as np
+import netCDF4 as NC
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import cartopy.crs as ccrs
+import matplotlib.gridspec as gridspec
+from scipy.io import loadmat
+from pyproj import Proj
+from tdr_tc_centering_with_example import distance
+import matplotlib.lines as mlines
+from matplotlib.lines import Line2D
+
+#Largest Mass Times
+# time1= 130 #2600 seconds
+# time1_full=2600
+# time2= 175 #3500 seconds
+# time2_full=3500
+# #domain_width_value= 150
+
+#One or more rev Times
+time1= 52 #1040 seconds
+time1_full=1040
+time2= 72 #1440 seconds
+time2_full=1440
+time3= 235 #4700 seconds
+time3_full=4700
+domain_width_value= 100
+
+
+# Function to calculate azimuth
+def calculate_azimuth(x1, y1, x2_array, y2_array):
+    dx = x2_array - x1
+    dy = y2_array - y1
+    angle_rad = np.arctan2(dy, dx)
+    angle_deg = np.degrees(angle_rad)
+    met_ang = (-angle_deg + 90) % 360
+    for i in range(len(met_ang) - 1):
+        met_ang[i+1] = np.where(met_ang[i] > 330 and met_ang[i+1] < 100 or met_ang[i] < 100 and met_ang[i+1] > 330, np.nan, met_ang[i+1])
+    return met_ang
+
+os.chdir('/rita/s0/scratch/nrb171/Harvey/') # Get Harvey data from Nick's folder
+levels_dbz = np.arange(-15, 75, 3)
+levels_W = np.arange(-5, 5.001, 0.5)
+
+# Import ICTG and cropped data
+os.chdir('/rita/s0/bsr5234/modelling/ICTG/forBruno/model2/')
+fname = "ictg2_stormrel3DlogD_tenicfzrfzPSD_m1-10_28800s_x117y108z23_201708250400_newspreadtest.mat" # New run with riming
+ictg = loadmat(fname)
+part_mass = ictg['part_m']  # (x,y,z,size,time)
+
+# Import shear data
+os.chdir('/rita/s0/scratch/nrb171/harvey_postproc/9km/')
+fname = "wrf_shear_nondivirrot02.mat"  # Nick's shear data
+from scipy.io import loadmat
+mat = loadmat(fname)
+shear_u = np.array(mat['shru'][0, 1:])
+shear_v = np.array(mat['shrv'][0, 1:])
+
+# Interpolate the shear data to 5-min resolution
+interp_to = np.arange(1, 361, 1)
+interp_from = np.arange(0, 360, 12)
+interp_shear_u = np.interp(interp_to, interp_from, shear_u)
+interp_shear_v = np.interp(interp_to, interp_from, shear_v)
+
+# Plot dbz at 4z
+os.chdir('/rita/s0/scratch/nrb171/harvey_postproc/1km')
+file= 'wrfout_d04_2017-08-25_04:00:00_dbz_z.nc'
+level_index=15
+data = NC.Dataset(file)
+dbz=data.variables['dbz_interp'][level_index] 
+levels=data.variables['level'][:]
+formatted_level = int(levels[level_index])
+lat = data.variables['XLAT']
+lon = data.variables['XLONG']
+
+xx, yy = np.meshgrid(np.arange(0,np.shape(dbz)[0]),np.arange(0,np.shape(dbz)[1]))
+crop_adjx = 407
+crop_adjy = 416
+
+#Wind centers
+os.chdir('/rita/s0/bsr5234/modelling/tilt_analysis/')
+allstks = np.load('stored_centers_Harvey.npy')
+ctrlons = allstks[:,0,0]
+ctrlats = allstks[:,1,0]
+wctrys = allstks[:,5,0]
+wctrxs = allstks[:,6,0]
+tstep = 120
+
+radius_grid = distance(ctrlats[tstep], ctrlons[tstep], lat, lon)
+x_axes = np.concatenate((-radius_grid[415,:407],radius_grid[415,407:]))
+y_axes = np.concatenate((-radius_grid[:415,407],radius_grid[415:,407]))
+
+#Get time values
+for i in range(len(part_mass[:, 0, 0, 0, 0])): 
+    for j in range(len(part_mass[0, :, 0, 0, 0])): 
+        for k in range(len(part_mass[0, 0, :, 0, 0])): 
+            for l in range(len(part_mass[0, 0, 0, :, 0])): 
+                if not np.isnan(ictg['part_posx'][i, j, k, 0, 0]):
+                     part_m_values = ictg['part_m'][i, j, k, l, :]
+                     time_values = np.arange(len(part_m_values)) * 20
+
+
+#Specify which crystals to plot
+# specific_particle_indices = [(17, 32, 1, 2)]
+specific_particle_indices = [(14, 32, 2, 0)]
+
+# Loop over each particle and generate plots
+for particle_indices in specific_particle_indices:
+    m, n, o, p = particle_indices
+    fig = plt.figure(figsize=(16, 14), dpi=300)
+    gs = gridspec.GridSpec(10, 8)
+
+    # Create subplots
+    ax1 = fig.add_subplot(gs[0:4,0:4]) # Reflectivity
+    ax2 = fig.add_subplot(gs[0:2,4:8]) # Rime Mass
+    ax3 = fig.add_subplot(gs[2:4,4:8]) # Particle Mass
+    ax4 = fig.add_subplot(gs[4:6,0:4]) # Temperature
+    ax5 = fig.add_subplot(gs[4:6,4:8]) # Aspect Ratio
+    ax6 = fig.add_subplot(gs[6:8,0:4]) # Ice Supersaturation
+    ax7 = fig.add_subplot(gs[6:8,4:8]) # Z
+    ax8 = fig.add_subplot(gs[8:10,0:4]) # Radial
+    ax9 = fig.add_subplot(gs[8:10,4:8]) # Azimuthal
+
+    k=o
+    azimuths_single = calculate_azimuth(0, 0, ictg['part_posx'][m,n,o,p,:], ictg['part_posy'][m,n,o,p,:])
+    #d_single = np.sqrt(ictg['part_posx'][m,n,o,p,:]**2 + ictg['part_posy'][m,n,o,p,:]**2)
+    
+    # Plot all trajectories in gray for current altitude/size bin and surrounding altitudes and same size bin 
+    for i in range(len(part_mass[:,0,0,0,0])): 
+        for j in range(len(part_mass[0,:,0,0,0])): 
+            for k_offset in [-1, 0, 1]:  # Altitude; Loop over k-1, k, k+1
+                k_adj = k + k_offset
+                if 0 <= k_adj < len(part_mass[0,0,:,0,0]):  # Check if k_adj is within valid range
+                    for l_offset in [0,1]:  # Loop over size bins (added to specified index) 
+                        l_adj = l_offset
+                        if not np.isnan(ictg['part_posx'][i,j,k_adj,0,0]):
+                        # Calculate radial distance
+                            d_single = np.sqrt(ictg['part_posx'][i,j,k_adj,l_adj,:]**2 + ictg['part_posy'][i,j,k_adj,l_adj,:]**2)
+                            print(l_adj)
+                            # Check if the initial d_single is within 40 km
+                            if d_single[0] > 40:  # Skip plotting if initial distance exceeds 40 km
+                                continue
+                            
+                            #Calculate Azimuthal angle
+                            azimuths = calculate_azimuth(0, 0, ictg['part_posx'][i,j,k_adj,l_adj,:], ictg['part_posy'][i,j,k_adj,l_adj,:])
+                            
+                            # Define the range and normalize
+                            azimuth_right = azimuths_single[0] + 22.5
+                            azimuth_left = azimuths_single[0] - 22.5
+                            azimuth_right = azimuth_right % 360
+                            azimuth_left = azimuth_left % 360
+
+                            # Function to check if an angle is within the interval, handling wrap-around
+                            def is_within_interval(angle, left, right):
+                                if left < right:
+                                    return left <= angle <= right
+                                else:
+                                    return angle >= left or angle <= right
+
+                            # Check if the initial azimuthal location is within the 45-degree arc and plot 
+                            if is_within_interval(azimuths[0], azimuth_left, azimuth_right):
+                                x = ictg['part_posx'][i,j,k_adj, l_adj, :] 
+                                y = ictg['part_posy'][i,j,k_adj, l_adj, :] 
+                                ax1.plot(x, y, linewidth='0.50', color='grey', alpha=0.5)
+
+                                gray_lw=0.50
+                                ax2.plot(time_values, np.cumsum(ictg['part_mrime'][i,j,k_adj,l_adj,:]), linewidth=gray_lw, color='gray', alpha=0.5)
+                                ax3.plot(time_values, ictg['part_m'][i,j,k_adj,l_adj,:], linewidth=gray_lw, color='gray', alpha=0.5)
+                                ax4.plot(time_values, ictg['record_T'][i,j,k_adj,l_adj,:]-273.15, linewidth=gray_lw, color='gray', alpha=0.5)
+                                ax5.plot(time_values, ictg['part_c'][i,j,k_adj,l_adj,:]/ictg['part_a'][i,j,k_adj,l_adj,:], linewidth=gray_lw, color='gray', alpha=0.5)
+                                ax6.plot(time_values, (ictg['record_evapor'][i,j,k_adj,l_adj,:]/ictg['record_eice'][i,j,k_adj,l_adj,:])-1, linewidth=gray_lw, color='gray', alpha=0.5)
+                                #ax7.plot(time_values, ictg['part_posz'][i,j,k_adj,l,:], linewidth=gray_lw, color='gray', alpha=0.5)
+                                ax7.plot(time_values, ictg['record_w'][i,j,k_adj,l_adj,:], linewidth=gray_lw, color='gray', alpha=0.5)
+                                ax8.plot(azimuths, ictg['part_posz'][i,j,k_adj,l_adj,:], linewidth=gray_lw, color='gray', alpha=0.5)
+                                ax9.plot(d_single, ictg['part_posz'][i,j,k_adj,l_adj,:], linewidth=gray_lw, color='gray', alpha=0.5)
+            
+   # Define the colors for the legend
+    #legend_colors = ['darkblue', 'darkred', 'darkgreen']  #Largest Mass Family; extrme/unique family
+    legend_colors = ['darkred', 'darkgreen', 'darkblue']  #One or more revolutions Family
+    
+    crystal_indices = [(17, 32, 1, 2), (17, 32, 1, 3), (17, 32, 1, 4)]  # One or more rev
+    #crystal_indices = [(14, 32, 2,0), (14, 32, 2,1), (14,32,2,4)]  # Largest Mass Family
+
+    # Generate the legend labels based on p+1
+    #legend_labels = ['FC1 (Crystal 1)', 'FC2 (Crystal 2)', 'AC1']
+    legend_labels = ['AC2', 'AC3', 'FC3 (Crystal 9)']
+    legend_entries = []  # Store final masses for the legend
+
+    # Retrieve particle data for the specific crystal index (m, n, o, p)
+    x = ictg['part_posx'][m, n, o, p, :]
+    y = ictg['part_posy'][m, n, o, p, :]
+    m, n, o, p = 14, 32, 2, 1  # crystal indices
+
+    part_a= ictg['part_a']
+    part_c= ictg['part_c']
+
+    # Get the initial a and c dimensions
+    a0 = part_a[m, n, o, p, 0]
+    c0 = part_c[m, n, o, p, 0]
+
+    # Add context trajectories for the specified crystal indices
+    for i, (m, n, o, p) in enumerate(crystal_indices):
+        color = legend_colors[i]  # Get the corresponding color for the crystal index
+        
+        # Plot particle trajectories and properties in different colors
+        linewidth = 2.25 if i < 2 else 1.25
+        ax1.plot(x, y, linewidth=linewidth, color=color)
+        ax1.plot(x[0], y[0], 'o', color=color, markersize=5)
+        
+        #Mark times with X's
+        ax1.plot(x[time1], y[time1], marker="X", markersize=10, markeredgecolor='white', markeredgewidth=1, color=color)
+        ax1.plot(x[time2], y[time2], marker="X", markersize=10, markeredgecolor='white', markeredgewidth=1, color=color)
+        ax1.plot(x[time3], y[time3], marker="X", markersize=10, markeredgecolor='white', markeredgewidth=1, color=color)
+
+        linewidth = 1.5 if i < 2 else 1.00
+        ax2.plot(time_values, np.cumsum(ictg['part_mrime'][m, n, o, p, :]), linewidth=linewidth, color=color)
+        ax3.plot(time_values, ictg['part_m'][m, n, o, p, :], linewidth=linewidth, color=color)
+        ax4.plot(time_values, ictg['record_T'][m, n, o, p, :] - 273.15, linewidth=linewidth, color=color)
+        ax5.plot(time_values, ictg['part_c'][m, n, o, p, :] / ictg['part_a'][m, n, o, p, :], linewidth=linewidth, color=color)
+        ax6.plot(time_values, (ictg['record_evapor'][m, n, o, p, :] / ictg['record_eice'][m, n, o, p, :]) - 1, linewidth=linewidth, color=color)
+        ax7.plot(time_values, ictg['record_w'][m, n, o, p, :], linewidth=linewidth, color=color)
+        
+        azimuths = calculate_azimuth(0, 0, ictg['part_posx'][m, n, o, p, :], ictg['part_posy'][m, n, o, p, :])
+        ax8.plot(azimuths, ictg['part_posz'][m, n, o, p, :], linewidth=linewidth, color=color)
+        ax8.plot(azimuths[0], ictg['part_posz'][m, n, o, p, 0], 'o', color=color, markersize=4)
+
+        d = np.sqrt(ictg['part_posx'][m, n, o, p, :]**2 + ictg['part_posy'][m, n, o, p, :]**2)
+        ax9.plot(d, ictg['part_posz'][m, n, o, p, :], linewidth=linewidth, color=color)
+        ax9.plot(d[0], ictg['part_posz'][m, n, o, p, 0], 'o', color=color, markersize=4)
+
+        #Add markers
+        ax8.plot(azimuths[time1], ictg['part_posz'][m, n, o, p, time1], marker="X", markersize=10, markeredgecolor='white', markeredgewidth=1, color=color)
+        ax8.plot(azimuths[time2], ictg['part_posz'][m, n, o, p, time2], marker="X", markersize=10, markeredgecolor='white', markeredgewidth=1, color=color)
+        ax8.plot(azimuths[time3], ictg['part_posz'][m, n, o, p, time3], marker="X", markersize=10, markeredgecolor='white', markeredgewidth=1, color=color)
+
+        ax9.plot(d[time1], ictg['part_posz'][m, n, o, p, time1], marker="X", markersize=10, markeredgecolor='white', markeredgewidth=1, color=color)
+        ax9.plot(d[time2], ictg['part_posz'][m, n, o, p, time2], marker="X", markersize=10, markeredgecolor='white', markeredgewidth=1, color=color)
+        ax9.plot(d[time3], ictg['part_posz'][m, n, o, p, time3], marker="X", markersize=10, markeredgecolor='white', markeredgewidth=1, color=color)
+
+
+    # Create custom legend handles with the specified colors
+    legend_handles = [Line2D([0], [0], color=color, lw=2) for color in legend_colors]
+
+    #Denote Times
+    for ax in [ax2, ax3, ax4, ax5, ax6, ax7]:
+        ax.axvline(x=time1_full, color='black', linestyle='--', linewidth=1)
+        ax.axvline(x=time2_full, color='black', linestyle='--', linewidth=1)
+        ax.axvline(x=time3_full, color='black', linestyle='--', linewidth=1)
+
+    # Add a grey line for the spatially adjacent crystals
+    adjacent_color = 'grey'
+    adjacent_handle = plt.Line2D([0], [0], color=adjacent_color, lw=2)
+    legend_handles = [plt.Line2D([0], [0], color=legend_colors[i], lw=2) for i in range(3)] + [adjacent_handle]
+    legend_labels.append('SACs')  # Add the multi-line label
+    ax1.legend(legend_handles, legend_labels, loc='upper right')
+    ax1.scatter(0, 0, alpha=1, color='r', marker='+') #Add center
+
+    # Add box showing the boundaries for the 45-degree arc
+    azimuth_right = (azimuths_single[0] + 22.5) % 360
+    azimuth_left = (azimuths_single[0] - 22.5) % 360
+    plotymax, plotymin = 17, 5
+
+    # convert km altitude to normed values
+    def conv_to_norm(km_alt, plotymax, plotymin):
+        normed_alt = float(km_alt - plotymin) / (float(plotymax)-5)
+        return normed_alt
+
+    vspanymax = conv_to_norm(ictg['part_posz'][m,n,o,p,0]+1, plotymax, plotymin)
+    vspanymin = conv_to_norm(ictg['part_posz'][m,n,o,p,0]-1, plotymax, plotymin)
+    ax8.set_ylim(plotymin, plotymax)
+
+    if azimuth_left < azimuth_right:
+        ax8.axvspan(azimuth_left, azimuth_right, ymin=vspanymin,ymax=vspanymax, color='yellow', alpha=0.3)
+    else:
+        ax8.axvspan(azimuth_left, 360, color='yellow', ymin=vspanymin,ymax=vspanymax, alpha=0.3)
+        ax8.axvspan(0, azimuth_right, color='yellow', ymin=vspanymin,ymax=vspanymax, alpha=0.3)
+
+    crystal_id = f"{m}_{n}_{o}_{p}"
+    PT=ax1.contourf(x_axes, y_axes, dbz, cmap=cm.gist_ncar, levels=levels_dbz, extend='both', alpha=0.10)
+
+    cl=plt.colorbar(PT,ax=ax1)  
+    domain_width=domain_width_value
+    ax1.set_xlim(0- domain_width, 0+ domain_width)
+    ax1.set_ylim(0 -domain_width,0 +domain_width)
+    xtlabs=np.concatenate((np.arange(domain_width,0,-25),np.arange(0,domain_width+1,25)))
+    ax1.set_xticks(np.arange(-domain_width,domain_width+1,25), xtlabs)
+    ax1.set_yticks(np.arange(-domain_width,domain_width+1,25), xtlabs)
+
+    cl.ax.tick_params()
+    cl.ax.set_title('dbz')
+
+    # Add title, axes, etc to plot
+    for ax in [ax2,ax3, ax5]: # Set mass variables to use log scale
+        ax.set_yscale('log')
+
+    for ax in [ax2,ax3, ax4,ax5,ax6,ax7]:
+        ax.set_xlim(left=0)
+
+    ax1.set_xlabel("Distance from storm center (km)")
+    ax1.set_ylabel("Distance from storm center (km)")
+    ax1.text(0.02,0.88,"a)",transform=ax1.transAxes, fontsize=18)
+    
+    #Add legend
+    yellow_proxy = mlines.Line2D([], [], color='yellow', marker='s', linestyle='None', markersize=10, alpha=0.3,label='Azimuthal Initialization Area')
+    ax8.legend(handles=[yellow_proxy], loc="upper right")
+
+    ax2.set_title('Particle Accumulated Rime Mass')
+    ax2.set_xlabel('Time (seconds)')
+    ax2.set_ylabel('Mass (mg)')
+    ax2.text(0.02,0.88,"e)",transform=ax2.transAxes, fontsize=18)
+    ax2.grid()
+
+    ax3.set_title('Particle Mass')
+    ax3.set_xlabel('Time (seconds)')
+    ax3.set_ylabel('Mass (mg)')
+    ax3.text(0.02,0.88,"f)",transform=ax3.transAxes, fontsize=18)
+    ax3.grid()
+
+    ax4.set_title('Temperature')
+    ax4.set_xlabel('Time (seconds)')
+    ax4.set_ylabel('Temperature (C)')
+    ax4.text(0.02,0.88,"b)",transform=ax4.transAxes, fontsize=18)
+    ax4.invert_yaxis()
+    ax4.grid()
+
+    ax5.set_title('Particle Aspect Ratio')
+    ax5.set_xlabel('Time (seconds)')
+    ax5.set_ylabel('c/a')
+    ax5.text(0.02,0.88,"g)",transform=ax5.transAxes, fontsize=18)
+    ax5.grid()
+
+    ax6.set_title('Ice Supersaturation')
+    ax6.set_xlabel('Time (seconds)')
+    ax6.text(0.02,0.88,"c)",transform=ax6.transAxes, fontsize=18)
+    ax6.grid(True)
+
+    ax7.set_title('Vertical Velocity')
+    ax7.set_xlabel('Time (seconds)')
+    ax7.set_ylabel('Vertical Velocity (m/s)')
+    ax7.text(0.02,0.88,"h)",transform=ax7.transAxes, fontsize=18)
+    ax7.grid()
+
+    ax8.set_title('Azimuthal Position')
+    ax8.set_xlabel('Azimuth (degrees)')
+    ax8.set_ylabel('Altitude (km)')
+    ax8.set_xlim(0,361)
+    ax8.text(0.02,0.88,"d)",transform=ax8.transAxes, fontsize=18)
+    ax8.grid()
+
+    ax9.set_title('Radial Position')
+    ax9.set_xlabel('Radius (km)')
+    ax9.set_ylabel('Altitude (km)')
+    ax9.set_xlim(0,right=None)
+    ax9.text(0.02,0.88,"i)",transform=ax9.transAxes, fontsize=18)
+    ax9.grid()
+
+    #Highlight zero line
+    ax5.axhline(y=1, color='black', linewidth=3)
+    ax6.axhline(y=0, color='black', linewidth=3)
+    ax7.axhline(y=0, color='black', linewidth=3)
+
+    #Add quadrant markers and labels
+    for x in [15, 105, 195, 285]:
+        ax8.axvline(x=x, color='gray', linestyle='--', linewidth=3)
+    
+    # Add labels in the middle of each section
+    label_positions = [60, 150, 240, 322.5]
+    labels = ['DL', 'DR', 'UR', 'UL']
+
+    ymin, ymax = ax8.get_ylim()
+    y_pos = ymin + 0.75 * (ymax - ymin)  # Position labels near the top
+
+    for x, label in zip(label_positions, labels):
+        ax8.text(x, y_pos, label, ha='center', va='center', fontsize=10, color='black', alpha=0.8)
+
+    #Add dashed line in reflectivity
+    azimuth_line = [295, 268, 123, 126, 110] #One or more rev
+    #azimuth_line = [200,175] #Largest Mass
+    radius = 200  # Can change
+
+    for angle in azimuth_line:
+        azimuth_radians = np.radians(90 - angle)  # Adjust for clockwise rotation
+        x_azimuth_1 = radius * np.cos(azimuth_radians)
+        y_azimuth_1 = radius * np.sin(azimuth_radians)
+        ax1.plot([0, x_azimuth_1], [0, y_azimuth_1], linestyle='--', color='black', linewidth=1)
+
+    # #2ne line
+    # azimuth_line_2 = 175 #Azimuth value from ax3
+    # radius = 200  # Can change
+    # azimuth_radians_2 = np.radians(90 - azimuth_line_2)  # Adjust the azimuth angle for clockwise rotation
+    # # Calculate the x, y coordinates for the line at this azimuth (from the center to the edge of the plot)
+    # x_azimuth_2 = radius * np.cos(azimuth_radians_2)
+    # y_azimuth_2 = radius * np.sin(azimuth_radians_2)
+
+    # # Plot the dashed line at the specified azimuth angle in ax1
+    # ax1.plot([0, x_azimuth_2], [0, y_azimuth_2], linestyle='--', color='black', linewidth=1)
+
+    fig.tight_layout()
+    PTG=plt.gcf()
+
+    # Save the figure
+    plt.savefig('/rita/s0/mjv5638/plots/A_thesis/NEWTEST_summaryplot_withSAC' + crystal_id,bbox_inches="tight")
+
+    print(crystal_id)
+    plt.close()

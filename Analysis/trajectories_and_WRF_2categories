@@ -1,0 +1,215 @@
+import os
+import numpy as np
+import netCDF4 as NC
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import cartopy.crs as ccrs
+import matplotlib.gridspec as gridspec
+from scipy.io import loadmat
+from pyproj import Proj
+from matplotlib.lines import Line2D
+
+domain_width = 100  # Set domain size for plots in km
+
+# Function to calculate azimuth angle from a reference point to multiple points
+def calculate_azimuth(x1, y1, x2_array, y2_array):
+    dx = x2_array - x1
+    dy = y2_array - y1
+    angle_rad = np.arctan2(dy, dx)  # Angle in radians
+    angle_deg = np.degrees(angle_rad)  # Convert to degrees
+    met_ang = (-angle_deg + 90) % 360  # Convert to meteorological angle
+    # Handle discontinuities around 0/360 degrees by setting jumps to NaN
+    for i in range(len(met_ang) - 1):
+        met_ang[i+1] = np.where(
+            met_ang[i] > 330 and met_ang[i+1] < 100 or met_ang[i] < 100 and met_ang[i+1] > 330, 
+            np.nan, 
+            met_ang[i+1]
+        )
+    return met_ang
+
+# Load Harvey simulation data
+os.chdir('/rita/s0/scratch/nrb171/Harvey/')
+levels_dbz = np.arange(-15, 75, 3)  # Contour levels for reflectivity
+levels_W = np.arange(-5, 5.001, 0.5)  # Contour levels for vertical velocity
+
+# Load ICTG particle data
+os.chdir('/rita/s0/bsr5234/modelling/ICTG/forBruno/model2/')
+fname = "ictg2_stormrel3DlogD_tenicfzrfzPSD_m1-10_28800s_x117y108z23_201708250400_newspreadtest.mat"
+ictg = loadmat(fname)
+part_mrime_array = ictg['part_posx'][:]  # Particle positions array (x,y,z,size,time)
+
+# Load shear data from WRF post-processing
+os.chdir('/rita/s0/scratch/nrb171/harvey_postproc/9km/')
+fname = "wrf_shear_nondivirrot02.mat"
+mat = loadmat(fname)
+shear_u = np.array(mat['shru'][0, 1:])
+shear_v = np.array(mat['shrv'][0, 1:])
+
+# Interpolate shear data to 5-min resolution for consistency with particle data
+interp_to = np.arange(1, 361, 1)
+interp_from = np.arange(0, 360, 12)
+interp_shear_u = np.interp(interp_to, interp_from, shear_u)
+interp_shear_v = np.interp(interp_to, interp_from, shear_v)
+
+# Loop over particle array dimensions to extract particle mass and time
+for i in range(len(part_mrime_array[:, 0, 0, 0, 0])): 
+    for j in range(len(part_mrime_array[0, :, 0, 0, 0])): 
+        for k in range(len(part_mrime_array[0, 0, :, 0, 0])): 
+            for l in range(len(part_mrime_array[0, 0, 0, :, 0])): 
+                if not np.isnan(ictg['part_posx'][i, j, k, 0, 0]):
+                     part_m_values = ictg['part_m'][i, j, k, l, :]
+                     time_values = np.arange(len(part_m_values)) * 20  # Time in seconds
+
+# Define crystal indices to plot
+crystal_indices = [(14,32,2,0), (14, 32, 2, 1),(24, 15, 2, 0), (15, 17, 2, 1), (30, 21, 2, 3)]  # Largest mass
+crystal_indices_2 = [(14, 32, 2, 0), (14, 32,2, 1), (22,14,2,0) ,(29, 27, 2, 4), (10, 16, 2, 0)]  # Lowest aspect ratio
+
+# Initialize figure with gridspec layout
+fig = plt.figure(figsize=(20, 16), dpi=300)
+gs = gridspec.GridSpec(10, 8)
+
+# Define subplots for different variables
+ax1 = fig.add_subplot(gs[0:4,0:4])  # Reflectivity plot for largest mass crystals
+ax3 = fig.add_subplot(gs[4:6,0:4])  # Mass plot
+ax5 = fig.add_subplot(gs[6:8,0:4])  # Temperature plot
+ax7 = fig.add_subplot(gs[8:10,0:4])  # Radial position plot
+
+ax2 = fig.add_subplot(gs[0:4,4:8])  # Reflectivity for lowest aspect ratio
+ax4 = fig.add_subplot(gs[4:6,4:8])  # Aspect ratio plot
+ax6 = fig.add_subplot(gs[6:8,4:8])  # Temperature plot
+
+# Define colors for plotting crystals
+colors = ['darkblue','red', 'violet','darkorange','darkolivegreen']
+colors_2 = ['darkblue','red', 'brown','limegreen','purple']
+
+# Plot trajectories, mass, and temperature for largest mass crystals
+for i, crystal in enumerate(crystal_indices):
+    m, n, o, p = crystal
+    x_one = ictg['part_posx'][m,n,o,p,:]
+    y_one = ictg['part_posy'][m,n,o,p,:]
+    initial_mass = ictg['part_m'][m, n, o, p, 0] 
+
+    linewidth = 2.25 if i < 2 else 1.25  # Highlight first two particles
+    d_single = np.sqrt(x_one**2 + y_one**2)  # Radial distance
+
+    # Radial position vs altitude
+    ax7.plot(d_single, ictg['part_posz'][m,n,o,p,:], linewidth=linewidth, color=colors[i])
+    ax7.plot(d_single[0], ictg['part_posz'][m,n,o,p,0], 'o', color=colors[i], markersize=5)
+
+    # Trajectory in x-y plane
+    ax1.plot(x_one, y_one, linewidth=linewidth, color=colors[i])
+    ax1.plot(x_one[0], y_one[0], 'o', color=colors[i], markersize=5)
+
+    # Mass and temperature over time
+    linewidth = 1.5 if i < 2 else 0.5
+    ax3.plot(time_values, ictg['part_m'][m,n,o,p,:], linewidth=linewidth, color=colors[i])
+    ax5.plot(time_values, ictg['record_T'][m,n,o,p,:]-273.15, linewidth=linewidth, color=colors[i])
+
+# Plot trajectories and aspect ratio for lowest aspect ratio crystals
+for i, crystal in enumerate(crystal_indices_2):
+    m, n, o, p = crystal
+    x_one = ictg['part_posx'][m,n,o,p,:]
+    y_one = ictg['part_posy'][m,n,o,p,:]
+    linewidth = 2.25 if i < 2 else 1.25
+
+    ax2.plot(x_one, y_one, linewidth=linewidth, color=colors_2[i], label=f'Crystal {i+1} (ID: {m}_{n}_{o}_{p})')
+    ax2.plot(x_one[0], y_one[0], 'o', color=colors_2[i], markersize=5)
+
+    linewidth = 1.5 if i < 2 else 0.5
+    ax4.plot(time_values, ictg['part_c'][m,n,o,p,:]/ictg['part_a'][m,n,o,p,:], linewidth=linewidth, color=colors_2[i])
+    ax6.plot(time_values, ictg['record_T'][m,n,o,p,:]-273.15, linewidth=linewidth, color=colors_2[i])
+
+# Load WRF reflectivity data at a specific vertical level
+os.chdir('/rita/s0/scratch/nrb171/harvey_postproc/1km')
+file = 'wrfout_d04_2017-08-25_04:00:00_dbz_z.nc'
+level_index = 15
+data = NC.Dataset(file)
+ideal = data.variables['dbz_interp'][level_index] 
+levels = data.variables['level'][:]
+formatted_level = int(levels[level_index])
+
+# Create meshgrid for plotting
+xx, yy = np.meshgrid(np.arange(0, np.shape(ideal)[0]), np.arange(0, np.shape(ideal)[1]))
+crop_adjx = 407
+crop_adjy = 416
+
+# Overlay reflectivity contours on trajectory plots
+PT1 = ax1.contourf(xx - crop_adjx, yy - crop_adjy, ideal, cmap=cm.gist_ncar, levels=levels_dbz, extend='both', alpha=0.10)
+ax1.scatter(0, 0, alpha=1, color='r', marker='+')  # Storm center
+cl1 = plt.colorbar(PT1, ax=ax1)  
+ax1.set_xlim(-domain_width, domain_width)
+ax1.set_ylim(-domain_width, domain_width)
+cl1.ax.set_title('dbz')
+
+PT2 = ax2.contourf(xx - crop_adjx, yy - crop_adjy, ideal, cmap=cm.gist_ncar, levels=levels_dbz, extend='both', alpha=0.10)
+ax2.scatter(0, 0, alpha=1, color='r', marker='+')
+cl2 = plt.colorbar(PT2, ax=ax2)
+ax2.set_xlim(-domain_width, domain_width)
+ax2.set_ylim(-domain_width, domain_width)
+cl2.ax.set_title('dbz')
+
+# Set log scale for mass plots
+for ax in [ax3, ax4]:
+    ax.set_yscale('log')
+
+# Configure axes titles, labels, and formatting
+ax1.set_title('Largest Mass Crystals', fontsize=12)
+ax2.set_title('Lowest Aspect Ratio Crystals', fontsize=12)
+ax3.set_title('Particle Mass', fontsize=12)
+ax3.set_xlabel('Time (seconds)')
+ax3.set_ylabel('Mass (mg)')
+ax3.grid()
+
+ax4.set_title('Particle Aspect Ratio', fontsize=12)
+ax4.set_xlabel('Time (seconds)')
+ax4.set_ylabel('c/a')
+ax4.grid()
+
+ax5.set_title('Temperature', fontsize=12)
+ax5.set_xlabel('Time (seconds)')
+ax5.set_ylabel('Temperature (C)')
+ax5.invert_yaxis()
+ax5.set_ylim(0, -70)
+ax5.grid()
+
+ax6.set_title('Temperature', fontsize=12)
+ax6.set_xlabel('Time (seconds)')
+ax6.set_ylabel('Temperature (C)')
+ax6.invert_yaxis()
+ax6.set_ylim(0, -70)
+ax6.grid()
+
+ax7.set_title('Radial Position', fontsize=12)
+ax7.set_xlabel('Radius (km)')
+ax7.set_ylabel('Altitude (km)')
+ax7.set_xlim(0, right=None)
+ax7.grid()
+
+# Add subplot labels
+ax1.text(0.02,0.88,"a)",transform=ax1.transAxes, fontsize=18)
+ax2.text(0.02,0.88,"e)",transform=ax2.transAxes, fontsize=18)
+ax3.text(0.02,0.88,"b)",transform=ax3.transAxes, fontsize=18)
+ax4.text(0.02,0.88,"f)",transform=ax4.transAxes, fontsize=18)
+ax5.text(0.02,0.88,"c)",transform=ax5.transAxes, fontsize=18)
+ax6.text(0.02,0.88,"g)",transform=ax6.transAxes, fontsize=18)
+ax7.text(0.02,0.88,"d)",transform=ax7.transAxes, fontsize=18)
+
+# Add custom legends for trajectories
+legend_entries = ['FC1 (Crystal 1)', 'FC2 (Crystal 2)','Crystal 3', 'Crystal 4','Crystal 5']
+legend_entries_2 = ['FC1 (Crystal 1)', 'FC2 (Crystal 2)','Crystal 6','Crystal 7','Crystal 8']
+handles_1 = [Line2D([0], [0], color=c, lw=2) for c in colors]
+handles_2 = [Line2D([0], [0], color=c, lw=2) for c in colors_2]
+
+ax1.legend(handles=handles_1, labels=legend_entries)
+ax2.legend(handles=handles_2, labels=legend_entries_2)
+
+# Add vertical line in figure as separator
+fig.add_artist(plt.Line2D([0.5, 0.5], [0.02, 0.98], transform=fig.transFigure, color='k', linewidth=1.5))
+
+fig.tight_layout()
+PTG = plt.gcf()
+
+# Save figure to file
+plt.savefig('/rita/s0/mjv5638/plots/A_thesis/TEST_trajectories_and_WRF_mass_and_aspect_ratio', bbox_inches="tight")
+print("done")
+plt.close()
